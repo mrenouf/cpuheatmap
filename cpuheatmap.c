@@ -69,9 +69,10 @@ void update_cpu() {
 }
 
 void on_resize(int w, int h) {
+    printf("on_resize: w=%d, h=%d\n", w, h);
     columns = floor((w - TILE_SPACING) / (TILE_SIZE + TILE_SPACING));
     if (columns > 0) {
-       rows = ceil(cpu_count / columns);
+       rows = ceil(cpu_count / (float) columns);
     } else {
        columns = 1;
        rows = 1;
@@ -104,11 +105,14 @@ void draw_tiles() {
     int x = 0;
     int y = 0;
     int cpu = 0;
+
     glBegin(GL_QUADS);
-    for (int row=0; row<rows; row++) {
+
+    for (int row=0; row<rows && cpu < cpu_count; row++) {
         x = TILE_SPACING;
         y += TILE_SPACING;
-        for (int col=0; col<columns; col++) {
+
+        for (int col=0; col<columns && cpu < cpu_count; col++) {
             set_color(cpu_load[cpu] * 255);
             glVertex2f(x, y);
             glVertex2f(x, y + TILE_SIZE);
@@ -142,8 +146,9 @@ void on_idle() {
  }
 
 void init_size(int cpu_count) {
-    columns = ceil(sqrt(cpu_count));
-    rows = ceil(cpu_count / columns);
+    float sr = sqrt(cpu_count);
+    columns = ceil(sr);
+    rows = floor(cpu_count / floor(sr));
     width = (columns * TILE_SIZE) + ((columns + 1) * TILE_SPACING);
     height = (rows * TILE_SIZE) + ((rows + 1) * TILE_SPACING); 
 }
@@ -152,6 +157,7 @@ void init(int *argc, char **argv, int w, int h) {
     top = glibtop_init();
     
     cpu_count = top->ncpu + 1;
+    printf("%d cpus online\n", cpu_count);
     init_size(cpu_count);
         
     cpu_load = calloc(cpu_count, sizeof(float));
