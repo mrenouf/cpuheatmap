@@ -4,7 +4,7 @@
 #include <sys/time.h>
 #include <math.h>
 #include <unistd.h>
-
+#include <limits.h>
 #include <GL/glut.h>
 
 #include <glib-2.0/glib.h>
@@ -15,28 +15,32 @@
 
 #define UPDATE_INTERVAL_MILLIS 33
 
-#define TILE_SIZE 150
-#define TILE_SPACING 10
+#define DEFAULT_WINDOW_WIDTH 600
+#define DEFAULT_WINDOW_HEIGHT 600
 
-#define WINDOW_WIDTH 1000
-#define WINDOW_HEIGHT 1000
+#define MAX_TILE_SPACING 10
+#define TILE_SPACING_PERCENT 10
 
 #define ATTACK_RATE 0.175
 #define DECAY_RATE 0.184
 
 glibtop *top;
-
 glibtop_cpu *cpu_now;
 glibtop_cpu *cpu_last;
 glibtop_cpu *tmp;
 
 int rows = 1;
 int columns = 1;
-int width = 1;
-int height = 1;
+int width = DEFAULT_WINDOW_WIDTH;
+int height = DEFAULT_WINDOW_HEIGHT;
+
+GLfloat tile_size = 1;
+GLfloat tile_spacing = 0;
+GLfloat padding_left = 0;
+GLfloat padding_top = 0;
 
 int cpu_count = 1;
-float *cpu_load;
+double *cpu_load;
 
 struct timespec time_now;
 long long next_update = 0;
@@ -46,13 +50,13 @@ long long time_millis() {
   return (((long long) time_now.tv_sec) * 1000) + (time_now.tv_nsec / 1000000);
 }
 
-float compute_load(int cpu_num) {
-    long total = cpu_now->xcpu_total[cpu_num] - cpu_last->xcpu_total[cpu_num];
-    long idle = cpu_now->xcpu_idle[cpu_num] - cpu_last->xcpu_idle[cpu_num];
-    return fmax(0, (total - idle) / (float) total);
+double compute_load(int cpu_num) {
+    const guint64 total = cpu_now->xcpu_total[cpu_num] - cpu_last->xcpu_total[cpu_num];
+    const guint64 idle = cpu_now->xcpu_idle[cpu_num] - cpu_last->xcpu_idle[cpu_num];
+    return fmax(0, (double) (total - idle) / (double) total);
 }
 
-float smooth(float from, float to) {
+double smooth(double from, double to) {
    return from + ((to - from) * ((from < to) ? ATTACK_RATE : DECAY_RATE));
 }
 
@@ -62,22 +66,43 @@ void update_cpu() {
     cpu_now = tmp;
     glibtop_get_cpu(cpu_now);
     for (int i=0; i < cpu_count; i++) {
-        float curr = compute_load(i);
-        float prev = cpu_load[i];
+        double curr = compute_load(i);
+        double prev = cpu_load[i];
         cpu_load[i] = smooth(prev, curr);
     }
 }
 
-void on_resize(int w, int h) {
-    printf("on_resize: w=%d, h=%d\n", w, h);
-    columns = floor((w - TILE_SPACING) / (TILE_SIZE + TILE_SPACING));
-    if (columns > 0) {
-       rows = ceil(cpu_count / (float) columns);
-    } else {
-       columns = 1;
-       rows = 1;
+void compute_tile_size() {
+    if (cpu_count <= 0 || width <= 0 || height <= 0) {
+        tile_size = 0;
+        rows = 0;
+        columns = 0;
     }
-    printf("%d row, %d col\n", rows, columns);
+    GLfloat max_side = 0;
+    for (int rows = 1; rows <= cpu_count; rows++) {
+        const GLfloat cols = (GLfloat) cpu_count / (GLfloat) rows;
+        const GLfloat max_width_side = (GLfloat) width / cols;
+        const GLfloat max_height_side = (GLfloat) height /(GLfloat) rows;
+        const GLfloat possible_side = (max_width_side < max_height_side) ? max_width_side : max_height_side;
+        if (possible_side > max_side) {
+            max_side = possible_side;
+        }
+    }
+    tile_size = max_side;
+    columns = floor((GLfloat) width / tile_size);
+    rows = floor((GLfloat) height / tile_size);
+    tile_spacing = MIN(MAX_TILE_SPACING, tile_size * (TILE_SPACING_PERCENT / 100.0f));
+    tile_size -= tile_spacing;
+    const float extra_width = (float) width - (tile_size * (float) columns + tile_spacing * (float) (columns - 1));
+    const float extra_height = (float) height - (tile_size * (float) rows + tile_spacing * (float) (rows - 1));
+    padding_left = MAX(0, extra_width / 2.0f);
+    padding_top = MAX(0, extra_height / 2.0f);
+}
+
+void on_resize(int w, int h) {
+    width = w;
+    height = h;
+    compute_tile_size();
     width = w;
     height = h;
     glMatrixMode(GL_PROJECTION);
@@ -86,13 +111,13 @@ void on_resize(int w, int h) {
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
     glViewport(0, 0, w, h);
-    glClearColor(0.1, 0.1, 0.1, 1.0);
+    glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 }
 
 void set_color(int value) {
     if (value < 0 || value > 255) {
-        glColor3f(0.0, 0.0, 0.0);
+        glColor3f(0.0f, 0.0f, 0.0f);
         return;
     }
     glColor3f(COLORS[value][0], COLORS[value][1], COLORS[value][2]);
@@ -102,39 +127,44 @@ void draw_tiles() {
     glPushMatrix();
     glTranslatef(0, 0, 0.0f);
 
-    int x = 0;
-    int y = 0;
+    GLfloat x = 0;
+    GLfloat y = 0;
     int cpu = 0;
 
     glBegin(GL_QUADS);
-
+    y = padding_top;
     for (int row=0; row<rows && cpu < cpu_count; row++) {
-        x = TILE_SPACING;
-        y += TILE_SPACING;
-
+        x = padding_left;
         for (int col=0; col<columns && cpu < cpu_count; col++) {
-            set_color(cpu_load[cpu] * 255);
+            set_color((int) round(cpu_load[cpu] * 255));
             glVertex2f(x, y);
-            glVertex2f(x, y + TILE_SIZE);
-            glVertex2f(x + TILE_SIZE, y + TILE_SIZE);
-            glVertex2f(x + TILE_SIZE, y);      
-            x += TILE_SIZE + TILE_SPACING;
+            glVertex2f(x, y + tile_size);
+            glVertex2f(x + tile_size, y + tile_size);
+            glVertex2f(x + tile_size, y);
+            x += tile_size;
+            if (col < columns - 1) {
+                x += tile_spacing;
+            }
             cpu++;
+
         }
-        y += TILE_SIZE;
+        y += tile_size;
+        if (row < rows - 1) {
+            y += tile_spacing;
+        }
     }
     glEnd();
 }
 
 void on_draw() {
-    glClearColor(0.1, 0.1, 0.1, 1.0);
+    glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     draw_tiles();
     glutSwapBuffers();
 }
 
 void on_idle() {
-    long long now = time_millis();
+    const long long now = time_millis();
     if (now < next_update) {
       usleep((next_update - now) * 1000);
       return;
@@ -145,32 +175,23 @@ void on_idle() {
     glutPostRedisplay();
  }
 
-void init_size(int cpu_count) {
-    float sr = sqrt(cpu_count);
-    columns = ceil(sr);
-    rows = floor(cpu_count / floor(sr));
-    width = (columns * TILE_SIZE) + ((columns + 1) * TILE_SPACING);
-    height = (rows * TILE_SIZE) + ((rows + 1) * TILE_SPACING); 
-}
-
 void init(int *argc, char **argv, int w, int h) {
     top = glibtop_init();
     
     cpu_count = top->ncpu + 1;
-    printf("%d cpus online\n", cpu_count);
-    init_size(cpu_count);
-        
-    cpu_load = calloc(cpu_count, sizeof(float));
+    printf("monitoring %d cpus... \n", cpu_count);
+
+    compute_tile_size(width, height, cpu_count);
+
+    cpu_load = calloc(cpu_count, sizeof(double));
     cpu_now = (glibtop_cpu*) calloc(1, sizeof(glibtop_cpu));
     cpu_last = (glibtop_cpu*) calloc(1, sizeof(glibtop_cpu));
     glibtop_get_cpu(cpu_now);
     glibtop_get_cpu(cpu_last);
-
     glutInit(argc, argv);
     glutInitDisplayMode(GLUT_SINGLE | GLUT_RGB);
     glutInitWindowSize(width, height);
     glutCreateWindow("cpuheatmap");
-
     glutDisplayFunc(on_draw);
     glutReshapeFunc(on_resize);
     glutIdleFunc(on_idle);
@@ -185,9 +206,7 @@ void cleanup() {
 
 int main(int argc, char **argv) {
     init(&argc, argv, width, height);
-
     glutMainLoop();
-
     cleanup();
     return 0;
 }
